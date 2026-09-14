@@ -1,0 +1,13 @@
+pymongo
+python-dotenv
+pyyaml
+certifi
+requests
+urllib3
+beautifulsoup4
+trafilatura
+langdetect
+google-cloud-bigquery
+mongomock
+pytest
+openpyxl

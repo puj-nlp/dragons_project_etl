@@ -1,0 +1,572 @@
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any
+
+from pymongo.errors import BulkWriteError, PyMongoError
+
+from src.gdelt.common.config import MongoDBConfig
+from src.gdelt.common.exceptions import MongoDBError
+from src.gdelt.database.collections import ensure_indexes
+from src.gdelt.database.mongodb import MongoDBConnection
+
+logger = logging.getLogger(__name__)
+
+
+def is_mongodb_quota_error(exc: BaseException) -> bool:
+    code = getattr(exc, "code", None)
+    if code == 8000:
+        return True
+    details = getattr(exc, "details", None) or {}
+    if details.get("code") == 8000:
+        return True
+    return "space quota" in str(exc).lower()
+
+
+@dataclass
+class InsertBatchResult:
+    attempted: int = 0
+    inserted: int = 0
+    failed: int = 0
+    duplicate_key_errors: int = 0
+    quota_exceeded: bool = False
+    errors: list[str] = field(default_factory=list)
+
+
+class BaseRepository:
+    def __init__(self, connection: MongoDBConnection, collection_name: str) -> None:
+        self._connection = connection
+        self._collection_name = collection_name
+
+    @property
+    def collection(self):
+        return self._connection.database[self._collection_name]
+
+
+class GkgRecordsRepository(BaseRepository):
+    """Persistence for normalized GDELT GKG documents."""
+
+    def __init__(self, connection: MongoDBConnection, config: MongoDBConfig) -> None:
+        super().__init__(connection, config.gkg_records_collection)
+        self._ordered = config.ordered_inserts
+
+    def insert_batch(self, documents: list[dict[str, Any]]) -> InsertBatchResult:
+        """Insert a batch of already-validated, BSON-safe documents.
+
+        Uses `ordered=False` by default (configurable) so that a single
+        duplicate-key or malformed document does not abort the whole batch
+        -- individual failures are counted instead, matching the
+        "documents_failed" metric in section 13 of the project spec.
+        """
+        result = InsertBatchResult(attempted=len(documents))
+        if not documents:
+            return result
+
+        try:
+            insert_result = self.collection.insert_many(
+                documents, ordered=self._ordered
+            )
+            result.inserted = len(insert_result.inserted_ids)
+            result.failed = result.attempted - result.inserted
+        except BulkWriteError as exc:
+            if is_mongodb_quota_error(exc):
+                result.quota_exceeded = True
+                n_inserted = exc.details.get("nInserted", 0)
+                result.inserted = int(n_inserted)
+                result.failed = result.attempted - result.inserted
+                result.errors.append(str(exc))
+                logger.warning("MongoDB quota reached while inserting gkg_records: %s", exc)
+                return result
+            write_errors = exc.details.get("writeErrors", [])
+            result.failed = len(write_errors)
+            result.inserted = result.attempted - result.failed
+            for err in write_errors:
+                code = err.get("code")
+                message = err.get("errmsg", "unknown error")
+                if code == 11000:  # duplicate key
+                    result.duplicate_key_errors += 1
+                else:
+                    result.errors.append(message)
+            logger.warning(
+                "Batch insert had %s failures (%s duplicate key) out of %s",
+                result.failed,
+                result.duplicate_key_errors,
+                result.attempted,
+            )
+        except PyMongoError as exc:
+            if is_mongodb_quota_error(exc):
+                result.quota_exceeded = True
+                result.failed = result.attempted - result.inserted
+                result.errors.append(str(exc))
+                logger.warning("MongoDB quota reached while inserting gkg_records: %s", exc)
+                return result
+            raise MongoDBError(f"Failed to insert batch into gkg_records: {exc}") from exc
+
+        return result
+
+    def count_by_run(self, run_id: str) -> int:
+        return self.collection.count_documents({"run_id": run_id})
+
+    def list_http_document_urls(self, limit: int) -> list[dict[str, Any]]:
+        """Return GKG records whose document_identifier looks like an HTTP(S) URL."""
+        try:
+            cursor = (
+                self.collection.find(
+                    {"document_identifier": {"$regex": r"^https?://", "$options": "i"}},
+                    {
+                        "gkg_record_id": 1,
+                        "document_identifier": 1,
+                        "date": 1,
+                        "source_common_name": 1,
+                    },
+                )
+                .limit(limit)
+            )
+            documents = []
+            for doc in cursor:
+                documents.append(
+                    {
+                        "gkg_record_id": doc.get("gkg_record_id"),
+                        "document_identifier": doc.get("document_identifier"),
+                        "date": doc.get("date"),
+                        "source_common_name": doc.get("source_common_name"),
+                    }
+                )
+            return documents
+        except PyMongoError as exc:
+            raise MongoDBError(f"Failed to list document URLs: {exc}") from exc
+
+
+class CrawledDataRepository(BaseRepository):
+    """Persistence for crawled article text and metadata."""
+
+    def __init__(self, connection: MongoDBConnection, config: MongoDBConfig) -> None:
+        super().__init__(connection, config.crawled_data_collection)
+        self._ordered = config.ordered_inserts
+
+    def insert_batch(self, documents: list[dict[str, Any]]) -> InsertBatchResult:
+        result = InsertBatchResult(attempted=len(documents))
+        if not documents:
+            return result
+        try:
+            insert_result = self.collection.insert_many(
+                documents, ordered=self._ordered
+            )
+            result.inserted = len(insert_result.inserted_ids)
+            result.failed = result.attempted - result.inserted
+        except BulkWriteError as exc:
+            if is_mongodb_quota_error(exc):
+                result.quota_exceeded = True
+                result.inserted = int(exc.details.get("nInserted", 0))
+                result.failed = result.attempted - result.inserted
+                result.errors.append(str(exc))
+                return result
+            write_errors = exc.details.get("writeErrors", [])
+            result.failed = len(write_errors)
+            result.inserted = result.attempted - result.failed
+            for err in write_errors:
+                if err.get("code") == 11000:
+                    result.duplicate_key_errors += 1
+                else:
+                    result.errors.append(err.get("errmsg", "unknown error"))
+        except PyMongoError as exc:
+            if is_mongodb_quota_error(exc):
+                result.quota_exceeded = True
+                result.failed = result.attempted - result.inserted
+                result.errors.append(str(exc))
+                return result
+            raise MongoDBError(f"Failed to insert batch into crawled_data: {exc}") from exc
+        return result
+
+
+class ExecutionMetricsRepository(BaseRepository):
+    """Persistence for the execution_metrics collection."""
+
+    def __init__(self, connection: MongoDBConnection, config: MongoDBConfig) -> None:
+        super().__init__(connection, config.execution_metrics_collection)
+
+    def save(self, metrics_document: dict[str, Any]) -> None:
+        try:
+            self.collection.update_one(
+                {"run_id": metrics_document["run_id"]},
+                {"$set": metrics_document},
+                upsert=True,
+            )
+        except PyMongoError as exc:
+            raise MongoDBError(f"Failed to save execution metrics: {exc}") from exc
+
+    def get_by_run_id(self, run_id: str) -> dict[str, Any] | None:
+        return self.collection.find_one({"run_id": run_id})
+
+
+class EventosRepository(BaseRepository):
+    def __init__(self, connection: MongoDBConnection, config: MongoDBConfig) -> None:
+        super().__init__(connection, config.eventos_collection)
+
+    def upsert_many(self, documents: list[dict[str, Any]]) -> InsertBatchResult:
+        result = InsertBatchResult(attempted=len(documents))
+        for document in documents:
+            try:
+                self.collection.update_one(
+                    {"id": document["id"]},
+                    {"$set": document},
+                    upsert=True,
+                )
+                result.inserted += 1
+            except PyMongoError as exc:
+                if is_mongodb_quota_error(exc):
+                    result.quota_exceeded = True
+                    result.failed += 1
+                    result.errors.append(str(exc))
+                    return result
+                result.failed += 1
+                result.errors.append(str(exc))
+        return result
+
+    def list_all(self) -> list[dict[str, Any]]:
+        return list(self.collection.find({}, {"_id": 0}).sort("id", 1))
+
+    def get_by_id(self, event_id: str) -> dict[str, Any] | None:
+        return self.collection.find_one({"id": event_id}, {"_id": 0})
+
+
+class QueriesRepository(BaseRepository):
+    def __init__(self, connection: MongoDBConnection, config: MongoDBConfig) -> None:
+        super().__init__(connection, config.queries_collection)
+
+    def insert(self, document: dict[str, Any]) -> None:
+        try:
+            self.collection.insert_one(document)
+        except PyMongoError as exc:
+            raise MongoDBError(f"Failed to insert query: {exc}") from exc
+
+
+class WhitelistRepository(BaseRepository):
+    def __init__(self, connection: MongoDBConnection, config: MongoDBConfig) -> None:
+        super().__init__(connection, config.whitelist_collection)
+        self._ordered = config.ordered_inserts
+
+    def insert_batch(self, documents: list[dict[str, Any]]) -> InsertBatchResult:
+        result = InsertBatchResult(attempted=len(documents))
+        if not documents:
+            return result
+        try:
+            insert_result = self.collection.insert_many(
+                documents, ordered=self._ordered
+            )
+            result.inserted = len(insert_result.inserted_ids)
+            result.failed = result.attempted - result.inserted
+        except BulkWriteError as exc:
+            if is_mongodb_quota_error(exc):
+                result.quota_exceeded = True
+                result.inserted = int(exc.details.get("nInserted", 0))
+                result.failed = result.attempted - result.inserted
+                result.errors.append(str(exc))
+                return result
+            write_errors = exc.details.get("writeErrors", [])
+            result.failed = len(write_errors)
+            result.inserted = result.attempted - result.failed
+            for err in write_errors:
+                if err.get("code") == 11000:
+                    result.duplicate_key_errors += 1
+                else:
+                    result.errors.append(err.get("errmsg", "unknown error"))
+        except PyMongoError as exc:
+            if is_mongodb_quota_error(exc):
+                result.quota_exceeded = True
+                result.failed = result.attempted - result.inserted
+                result.errors.append(str(exc))
+                return result
+            raise MongoDBError(f"Failed to insert batch into whitelist: {exc}") from exc
+        return result
+
+    def set_scrapper_id(self, whitelist_id: str, scrapper_id: str) -> None:
+        try:
+            self.collection.update_one(
+                {"id": whitelist_id},
+                {"$set": {"id_scrapper": scrapper_id}},
+            )
+        except PyMongoError as exc:
+            raise MongoDBError(f"Failed to update whitelist scrapper id: {exc}") from exc
+
+
+class ScrapperRepository(BaseRepository):
+    def __init__(self, connection: MongoDBConnection, config: MongoDBConfig) -> None:
+        super().__init__(connection, config.scrapper_collection)
+
+    def insert(self, document: dict[str, Any]) -> None:
+        try:
+            self.collection.insert_one(document)
+        except BulkWriteError as exc:
+            if is_mongodb_quota_error(exc):
+                raise MongoDBError(f"MongoDB quota reached inserting scrapper: {exc}") from exc
+            raise MongoDBError(f"Failed to insert scrapper: {exc}") from exc
+        except PyMongoError as exc:
+            if is_mongodb_quota_error(exc):
+                raise MongoDBError(f"MongoDB quota reached inserting scrapper: {exc}") from exc
+            raise MongoDBError(f"Failed to insert scrapper: {exc}") from exc
+
+
+class MetricsRepository(BaseRepository):
+    def __init__(self, connection: MongoDBConnection, config: MongoDBConfig) -> None:
+        super().__init__(connection, config.metrics_collection)
+
+    def save(self, document: dict[str, Any]) -> None:
+        try:
+            self.collection.update_one(
+                {"id": document["id"]},
+                {"$set": document},
+                upsert=True,
+            )
+        except PyMongoError as exc:
+            raise MongoDBError(f"Failed to save metrics: {exc}") from exc
+
+
+class MediaCloudSourcesRepository(BaseRepository):
+    def __init__(self, connection: MongoDBConnection, config: MongoDBConfig) -> None:
+        super().__init__(connection, config.media_cloud_sources_collection)
+
+    def upsert_many(self, documents: list[dict[str, Any]]) -> InsertBatchResult:
+        result = InsertBatchResult(attempted=len(documents))
+        for document in documents:
+            try:
+                self.collection.update_one(
+                    {"source_uid": document["source_uid"]},
+                    {"$set": document, "$setOnInsert": {"created_at": document.get("loaded_at")}},
+                    upsert=True,
+                )
+                result.inserted += 1
+            except PyMongoError as exc:
+                if is_mongodb_quota_error(exc):
+                    result.quota_exceeded = True
+                    result.failed += 1
+                    result.errors.append(str(exc))
+                    return result
+                result.failed += 1
+                result.errors.append(str(exc))
+        return result
+
+    def mark_queued(self, source_uids: list[str]) -> None:
+        if not source_uids:
+            return
+        self.collection.update_many(
+            {"source_uid": {"$in": source_uids}},
+            {"$set": {"status": "queued"}},
+        )
+
+
+class BlueskyPostsRepository(BaseRepository):
+    def __init__(self, connection: MongoDBConnection, config: MongoDBConfig) -> None:
+        super().__init__(connection, config.bluesky_posts_collection)
+
+    def upsert_many(self, documents: list[dict[str, Any]]) -> InsertBatchResult:
+        result = InsertBatchResult(attempted=len(documents))
+        for document in documents:
+            try:
+                self.collection.update_one(
+                    {"uri": document["uri"]},
+                    {
+                        "$set": {
+                            **document,
+                            "updated_at": document.get("collected_at"),
+                        },
+                        "$setOnInsert": {
+                            "created_in_mongo_at": document.get("collected_at"),
+                        },
+                        "$addToSet": {
+                            "run_ids": document.get("run_id"),
+                            "queries": document.get("query"),
+                        },
+                    },
+                    upsert=True,
+                )
+                result.inserted += 1
+            except PyMongoError as exc:
+                if is_mongodb_quota_error(exc):
+                    result.quota_exceeded = True
+                    result.failed += 1
+                    result.errors.append(str(exc))
+                    return result
+                result.failed += 1
+                result.errors.append(str(exc))
+        return result
+
+
+class ThreadsPostsRepository(BaseRepository):
+    def __init__(self, connection: MongoDBConnection, config: MongoDBConfig) -> None:
+        super().__init__(connection, config.threads_posts_collection)
+
+    def upsert_many(self, documents: list[dict[str, Any]]) -> InsertBatchResult:
+        result = InsertBatchResult(attempted=len(documents))
+        for document in documents:
+            try:
+                self.collection.update_one(
+                    {"id": document["id"]},
+                    {
+                        "$set": {**document, "updated_at": document.get("collected_at")},
+                        "$setOnInsert": {"created_in_mongo_at": document.get("collected_at")},
+                        "$addToSet": {
+                            "run_ids": document.get("run_id"),
+                            "queries": document.get("query"),
+                        },
+                    },
+                    upsert=True,
+                )
+                result.inserted += 1
+            except PyMongoError as exc:
+                if is_mongodb_quota_error(exc):
+                    result.quota_exceeded = True
+                    result.failed += 1
+                    result.errors.append(str(exc))
+                    return result
+                result.failed += 1
+                result.errors.append(str(exc))
+        return result
+
+
+class ThreadsRepliesRepository(BaseRepository):
+    def __init__(self, connection: MongoDBConnection, config: MongoDBConfig) -> None:
+        super().__init__(connection, config.threads_replies_collection)
+
+    def upsert_many(self, documents: list[dict[str, Any]]) -> InsertBatchResult:
+        result = InsertBatchResult(attempted=len(documents))
+        for document in documents:
+            try:
+                self.collection.update_one(
+                    {"id": document["id"]},
+                    {
+                        "$set": {**document, "updated_at": document.get("collected_at")},
+                        "$setOnInsert": {"created_in_mongo_at": document.get("collected_at")},
+                        "$addToSet": {"run_ids": document.get("run_id")},
+                    },
+                    upsert=True,
+                )
+                result.inserted += 1
+            except PyMongoError as exc:
+                if is_mongodb_quota_error(exc):
+                    result.quota_exceeded = True
+                    result.failed += 1
+                    result.errors.append(str(exc))
+                    return result
+                result.failed += 1
+                result.errors.append(str(exc))
+        return result
+
+
+class UrlQueueRepository(BaseRepository):
+    def __init__(self, connection: MongoDBConnection, config: MongoDBConfig) -> None:
+        super().__init__(connection, config.url_queue_collection)
+
+    def upsert_many(self, documents: list[dict[str, Any]]) -> InsertBatchResult:
+        result = InsertBatchResult(attempted=len(documents))
+        for document in documents:
+            try:
+                self.collection.update_one(
+                    {
+                        "url_hash": document["url_hash"],
+                        "source": document["source"],
+                        "strategy": document["strategy"],
+                    },
+                    {
+                        "$set": {
+                            "last_seen_at": document.get("queued_at"),
+                            "last_seen_run_id": document.get("run_id"),
+                        },
+                        "$setOnInsert": {
+                            **document,
+                            "created_at": document.get("queued_at"),
+                            "attempts": 0,
+                        },
+                    },
+                    upsert=True,
+                )
+                result.inserted += 1
+            except PyMongoError as exc:
+                if is_mongodb_quota_error(exc):
+                    result.quota_exceeded = True
+                    result.failed += 1
+                    result.errors.append(str(exc))
+                    return result
+                result.failed += 1
+                result.errors.append(str(exc))
+        return result
+
+    def list_pending(
+        self,
+        *,
+        limit: int,
+        source: str | None = None,
+        strategy: str | None = None,
+    ) -> list[dict[str, Any]]:
+        query: dict[str, Any] = {"status": {"$in": ["pending", "queued", "retry"]}}
+        if source:
+            query["source"] = source
+        if strategy:
+            query["strategy"] = strategy
+        return list(self.collection.find(query).sort("queued_at", 1).limit(limit))
+
+    def mark_processing(self, queue_id: str, run_id: str, now: datetime) -> None:
+        self.collection.update_one(
+            {"id": queue_id},
+            {
+                "$set": {"status": "processing", "processing_run_id": run_id, "updated_at": now},
+                "$inc": {"attempts": 1},
+            },
+        )
+
+    def mark_finished(
+        self,
+        queue_id: str,
+        *,
+        status: str,
+        crawl_id: str | None,
+        error: str | None,
+        now: datetime,
+    ) -> None:
+        update: dict[str, Any] = {
+            "status": status,
+            "updated_at": now,
+            "last_error": error,
+        }
+        if crawl_id:
+            update["crawl_id"] = crawl_id
+        self.collection.update_one({"id": queue_id}, {"$set": update})
+
+
+class UrlCrawlsRepository(BaseRepository):
+    def __init__(self, connection: MongoDBConnection, config: MongoDBConfig) -> None:
+        super().__init__(connection, config.url_crawls_collection)
+
+    def save(self, document: dict[str, Any]) -> None:
+        try:
+            self.collection.update_one(
+                {"queue_id": document["queue_id"]},
+                {"$set": document, "$setOnInsert": {"created_at": document.get("crawled_at")}},
+                upsert=True,
+            )
+        except PyMongoError as exc:
+            raise MongoDBError(f"Failed to save url crawl: {exc}") from exc
+
+
+class PipelineRunsRepository(BaseRepository):
+    def __init__(self, connection: MongoDBConnection, config: MongoDBConfig) -> None:
+        super().__init__(connection, config.pipeline_runs_collection)
+
+    def save(self, document: dict[str, Any]) -> None:
+        try:
+            self.collection.update_one(
+                {"run_id": document["run_id"]},
+                {"$set": document},
+                upsert=True,
+            )
+        except PyMongoError as exc:
+            raise MongoDBError(f"Failed to save pipeline run: {exc}") from exc
+
+
+def initialize_database(connection: MongoDBConnection, config: MongoDBConfig) -> None:
+    """Ensure collections/indexes exist. Safe to call on every startup."""
+    if config.ensure_indexes_on_startup:
+        ensure_indexes(connection.database, config)

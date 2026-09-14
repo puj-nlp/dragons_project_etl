@@ -1,0 +1,16 @@
+root_dir: data/media-cloud/White lists
+
+default_strategy: whitelist
+
+limit: 10
+
+language_folders:
+  "white list español": es
+  "white list espanol": es
+  spanish: es
+  "white list ingles": en
+  "white list inglés": en
+  english: en
+  "white list hungaro": hu
+  "white list húngaro": hu
+  hungarian: hu
