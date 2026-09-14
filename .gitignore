@@ -1,14 +1,14 @@
 .env
 .env.*
 !.env.example
+.idea/
 .venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/
 results.json
-data/crawled/
-data/mongo_exports/
+data/
 logs/*.log
 logs/*.csv
 gdelt/logs/
