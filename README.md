@@ -3,404 +3,255 @@
 ### Data Engineering Component of the DRAGONS Project
 
 - **Project:** DRAGONS – *Diffusing biodiversity Response-able Action and awareness raising through citizen empowerment, inclusive engagement and innovative Governance of Nature and Society*
-- **Work Package:** WP1 – Understanding societal perceptions, awareness, and engagement responses to biodiversity loss
+- **Work Package:** WP1 – Understanding social perceptions, awareness, and participatory responses to biodiversity loss (Task 1.1)
 - **Institution:** Pontificia Universidad Javeriana
-- **Related Repository:** `dragons-data-analytics`
+- **Related repositories:** [`dragons_project_nlp`](https://claude.ai/dragons_project_nlp) (platform: MongoDB, PostgreSQL, Metabase, Airflow, RAG) and [`dragons_project_analitycs`](https://claude.ai/dragons_project_analitycs) (variables, models, and results)
 
 ---
 
 ## Objective
 
-Develop the data engineering component responsible for collecting, transforming, validating, and storing information obtained from public or authorised online sources, including social media, news outlets, and other permitted data acquisition mechanisms.
+Collect, transform, validate, and store information from public or authorized sources (news and social media) in MongoDB in a reproducible, traceable, and quality-controlled manner for subsequent use in the analytics repository.
 
-The main objective is to build a reproducible data workflow capable of consolidating textual content and metadata into a MongoDB document database, ensuring traceability, data quality, and availability for subsequent use by the `dragons-data-analytics` repository.
+## What This Repository Does
+
+| Pipeline | Script | Output |
+|---|---|---|
+| GDELT event-based extraction | `scripts/run_gdelt.py` | SQL queries per event, GKG records (`whitelist`), URLs added to the queue, and per-query metrics |
+| Media Cloud | `scripts/load_mediacloud.py` | Whitelist entries (`media_cloud_sources`) and URLs added to the queue |
+| URL queue crawling | `scripts/run_url_crawler.py` | Text, title, author, date, and language for each URL (`url_crawls`) |
+| Bluesky | `scripts/run_bluesky.py` | Posts by country and keywords (`bluesky_posts`) |
+| Threads | `scripts/run_threads.py` | Posts and, optionally, replies (`threads_posts`, `threads_replies`) |
+| Export | `scripts/export_mongo_sample.py` | CSV/Excel samples from all collections |
+
+All runs produce an auditable summary in `pipeline_runs`, with one of the following statuses: `success`, `partial`, `failed`, or `quota_exceeded`.
+
+```mermaid
+flowchart LR
+  GKG["GDELT GKG<br/>BigQuery"] --> G["run_gdelt.py"]
+  MC["Media Cloud<br/>CSV or xlsx"] --> M["load_mediacloud.py"]
+  G --> Q[("url_queue")]
+  M --> Q
+  Q --> C["run_url_crawler.py"]
+  WEB["Web portals"] --> C
+  BS["Bluesky"] --> B["run_bluesky.py"]
+  TH["Threads"] --> T["run_threads.py"]
+  C --> DB[("MongoDB<br/>dragons database")]
+  G --> DB
+  M --> DB
+  B --> DB
+  T --> DB
+  DB --> A["dragons_project_analitycs"]
+```
+
+The complete diagrams (logical architecture, deployment, processes, sequences, data model, and class diagrams) are available in `docs/diagramas/` and in the project's technical documentation.
 
 ---
 
 ## Project Team
 
-### Project Leadership
+### Leadership
 
-Responsible for jointly guiding the technical, analytical, scientific, and domain strategy of the component, ensuring alignment between data engineering, analytics, and the biodiversity research objectives.
+- **PhD Luis Gabriel Moreno Sandoval** — *Technical & Data Analytics Lead*. Section Head and Professor, Department of Systems Engineering. Provides technical and methodological leadership for the data component. 📧 [morenoluis@javeriana.edu.co](mailto:morenoluis@javeriana.edu.co)
+- **PhD Juan David Amaya Espinel** — *Biodiversity Research & Domain Lead*. Associate Professor, Department of Ecology and Territory. Provides scientific and subject-matter leadership for the biodiversity component. 📧 [jamayae@javeriana.edu.co](mailto:jamayae@javeriana.edu.co)
 
-**Members:**
+### Coordination
 
-- **PhD Luis Gabriel Moreno Sandoval**  
-  **Technical & Data Analytics Lead**  
-  Section Head and Faculty Member, Department of Systems Engineering  
-  Pontificia Universidad Javeriana  
-
-  Responsible for the technical and methodological direction of the data component, architecture definition, analytics and artificial intelligence strategy, technical oversight, and validation of engineering and analytical deliverables.  
-  📧 [morenoluis@javeriana.edu.co](mailto:morenoluis@javeriana.edu.co)
-
-- **PhD Juan David Amaya Espinel**  
-  **Biodiversity Research & Domain Lead**  
-  Associate Professor, Department of Ecology and Territory  
-  Pontificia Universidad Javeriana  
-
-  Responsible for the scientific and thematic leadership of the biodiversity component. He guides the definition of research questions, conceptual criteria for source selection and evaluation, and the interpretation of results from the biodiversity domain perspective.  
-  📧 [jamayae@javeriana.edu.co](mailto:jamayae@javeriana.edu.co)
-
----
-
-### Project Coordination
-
-Responsible for coordinating the execution of the ETL component across technical and domain workstreams, connecting data acquisition and processing requirements with the scientific criteria of the biodiversity research component.
-
-**Members:**
-
-- **Juan Pablo Arias Buitrago**  
-  **Data Scientist & Technical Project Coordinator**  
-
-  Responsible for the operational and technical coordination of the project, activity and deliverable tracking, integration between `dragons-data-etl` and `dragons-data-analytics`, definition of data requirements, monitoring of acquisition, transformation, and quality processes, and validation that ETL outputs can support the analytical dataset and downstream analysis.  
-  📧 [ariasj.u@javeriana.edu.co](mailto:ariasj.u@javeriana.edu.co)
-
-- **Pabla Lozano Ramírez**  
-  **Biodiversity Domain Lead & Research Project Coordinator**  
-
-  Responsible for the scientific and thematic coordination of the ETL component, supporting the definition and validation of data sources, search terms and queries, content-selection criteria, and thematic relevance of the collected corpus. She also contributes to the thematic quality review of the data and validates that acquired sources and records remain aligned with the biodiversity research objectives.  
-  📧 [pabla-lozano@javeriana.edu.co](mailto:pabla-lozano@javeriana.edu.co)
-
----
+- **Juan Pablo Arias Buitrago** — *Data Scientist & Technical Project Coordinator*. Coordinates technical and operational activities, data requirements, and output validation. 📧 [ariasj.u@javeriana.edu.co](mailto:ariasj.u@javeriana.edu.co)
+- **Pabla Lozano Ramírez** — *Biodiversity Domain Lead & Research Project Coordinator*. Oversees sources, search terms, and the thematic relevance of the corpus. 📧 [pabla-lozano@javeriana.edu.co](mailto:pabla-lozano@javeriana.edu.co)
 
 ### Data Science and Analytical Validation
 
-Responsible for supporting the definition of analytical data requirements and ensuring that the information produced by the ETL component is suitable for downstream analytics.
+- **Sergio Pardo Hurtado** — *NLP Data Scientist & Lead Data Analyst*. Defines the fields, variables, and quality criteria required by the analytics component. 📧 [sergio_pardo@javeriana.edu.co](mailto:sergio_pardo@javeriana.edu.co)
 
-**Member:**
+### Data Engineering and Platform
 
-- **Sergio Pardo Hurtado**  
-  **NLP Data Scientist & Lead Data Analyst**  
-
-  Participates in the ETL component from the analytical perspective, supporting the definition of fields, variables, and data-quality criteria required for downstream analysis. He also contributes to validating that the collected and transformed data are suitable for the analytical dataset, statistical analysis, NLP, and artificial intelligence processes.  
-  📧 [sergio_pardo@javeriana.edu.co](mailto:sergio_pardo@javeriana.edu.co)
+- **Viviana Gómez León** — *Data Engineer & Platform Developer*. Develops connectors and handles data extraction, transformation, and persistence. 📧 [gomezlv@javeriana.edu.co](mailto:gomezlv@javeriana.edu.co)
+- **Marlon Jhoan García Restrepo** — *Data Engineer & DevOps Engineer*. Handles pipelines, quality assurance, automation, containers, and infrastructure. 📧 [mjgarcia@javeriana.edu.co](mailto:mjgarcia@javeriana.edu.co)
 
 ---
 
-### Data Engineering and Platform Team
+## Requirements
 
-Responsible for developing the acquisition, transformation, validation, storage, and infrastructure components supporting the ETL workflow.
+- Python 3.12
+- Accessible MongoDB instance. The current target is the MongoDB instance used by the [`dragons_project_nlp`](https://claude.ai/dragons_project_nlp) platform (`localhost:50030` from the host machine, `dragons-mongo:27017` within the shared Docker network).
+- GDELT only: a Google Cloud project with BigQuery enabled and a service account. Queries are billed according to the number of bytes processed.
+- Bluesky with authentication only: a handle and an *App Password* (never use the account password).
+- Threads only: a Meta application and an access token. Without a token, only the offline sample mode is available.
 
-**Members:**
+## Installation
 
-- **Viviana Gómez León**  
-  **Data Engineer & Platform Developer**  
+```bash
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
 
-  Responsible for developing source connectors, integrating external data sources, implementing extraction and transformation processes, persisting data in MongoDB, supporting communication between components, and contributing to the data platform implementation.  
-  📧 [gomezlv@javeriana.edu.co](mailto:gomezlv@javeriana.edu.co)
+The legacy GDELT scraper (`src/gdelt/collectors/web/news_extractor.py`) uses Playwright as a fallback when HTTP 403 errors occur. Playwright is not included in `requirements.txt`; install it only if needed:
 
-- **Marlon Jhoan Garcia Restrepo**  
-  **Data Engineer & DevOps Engineer**  
+```bash
+pip install playwright && playwright install chromium
+```
 
-  Responsible for developing and maintaining ETL pipelines, data-quality and storage components, automation, environment configuration, containerisation, continuous integration, deployment, and technical infrastructure support.  
-  📧 [mjgarcia@javeriana.edu.co](mailto:mjgarcia@javeriana.edu.co)
+## Configuration
 
----
+Copy `.env.example` to `.env` (never commit it to version control).
 
-## General Workflow
+| Variable | Purpose |
+|---|---|
+| `MONGODB_URI` | Connection string. Local: `mongodb://<username>:<password>@localhost:50030/?authSource=admin` |
+| `MONGODB_DATABASE` | Database name (defaults to `dragons`) |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Path to the BigQuery service account JSON file |
+| `BLUESKY_IDENTIFIER`, `BLUESKY_APP_PASSWORD` | Optional Bluesky authentication |
+| `THREADS_APP_ID`, `THREADS_APP_SECRET`, `THREADS_ACCESS_TOKEN` | Threads access credentials |
+
+> The credentials in `.env.example` are intended for **local development**. Change them in any other environment.
+
+Configuration files in `config/`:
+
+| File | Contents |
+|---|---|
+| `settings/mongodb.yaml` | URI, database name, names of the 15 collections, timeouts, and indexes created at startup |
+| `settings/pipeline.yaml` | Run prefix, system monitoring interval, and minimum free disk space (512 MB) |
+| `sources/gdelt.yaml` | BigQuery table, date range, `max_rows`, `batch_size`, and `max_bytes_billed` |
+| `sources/mediacloud.yaml` | Whitelist root directory, default strategy (`whitelist`), limit, and language-specific folders |
+| `sources/crawler.yaml` | `user_agent`, timeouts, delay between URLs, `respect_robots_txt`, and maximum HTML size |
+
+## Usage
+
+1. **Start the platform** (MongoDB) from `dragons_project_nlp`: start `docker/network`, then `docker/mongo`.
+
+2. **Verify the connection:**
+
+   ```bash
+   python scripts/smoke_local_mongo.py
+   ```
+
+3. **GDELT event-based extraction**
+
+   ```bash
+   python scripts/seed_events.py
+   python scripts/run_gdelt.py --max-events 1 --row-limit 10 --skip-scrape
+   python scripts/run_gdelt.py --event-id UK-01 --event-id CO-01 --row-limit 100 --skip-scrape
+   ```
+
+   `--skip-scrape` skips the legacy scraper; URLs remain in `url_queue` for the crawler to process.
+
+4. **Media Cloud:**
+
+   ```bash
+   python scripts/load_mediacloud.py --limit 10
+   ```
+
+5. **Crawl the URL queue:**
+
+   ```bash
+   python scripts/run_url_crawler.py --source media_cloud --limit 10
+   ```
+
+   Use `--watch --poll-seconds 30` to run the process continuously.
+
+6. **Social media**
+
+   ```bash
+   python scripts/run_bluesky.py --countries colombia --limit 10
+   python scripts/run_threads.py --countries colombia --limit 10 --download-replies
+   ```
+
+7. **Export samples:**
+
+   ```bash
+   python scripts/export_mongo_sample.py --limit 10 --format both
+   ```
+
+8. **End-to-end test with 10 documents and no BigQuery dependency:**
+
+   ```bash
+   python scripts/run_url_poc_10.py
+   ```
+
+## Data Model (`dragons` database)
+
+| Collection | Contents | Unique Key |
+|---|---|---|
+| `eventos` | Event catalog containing periods, countries, and keywords in EN, ES, and HU | `id` |
+| `queries` | SQL queries and parameters submitted to BigQuery for each event | `id` |
+| `whitelist` | Normalized GKG records (up to 100 per query) | `id`, `hash` |
+| `scrapper` | Output from the legacy scraper | `id`, `hash_whitelist` |
+| `metrics` | Per-query metrics (BigQuery, processing, MongoDB, and system) | `id`, `id_query` |
+| `media_cloud_sources` | Media Cloud whitelist entries | `source_uid` |
+| `url_queue` | Shared URL queue (GDELT and Media Cloud) | `url_hash + source + strategy` |
+| `url_crawls` | Download attempts and extracted text | `queue_id` |
+| `bluesky_posts` | Bluesky posts (original `texto_raw` and cleaned `text`) | `uri` |
+| `threads_posts`, `threads_replies` | Threads posts and replies | `id` |
+| `pipeline_runs` | Auditable summary for each run | `run_id` |
+| `gkg_records`, `crawled_data`, `execution_metrics` | Previous batch-based design (legacy) | `gkg_record_id`, `run_id` |
+
+Crawl statuses in `url_crawls`: `success`, `empty`, `http_error`, `invalid_url`, `robots_disallowed`.
+
+Queue statuses: `pending`, `queued`, `retry`, `processing`, `crawled`, `crawl_failed`.
+
+## Repository Structure
 
 ```text
-Public and authorised sources
-             │
-             ▼
-       Data acquisition
-             │
-             ▼
-          Validation
-             │
-             ▼
-   Cleaning and normalisation
-             │
-             ▼
-       Data quality
-             │
-             ▼
-           MongoDB
-             │
-             ▼
-    dragons-data-analytics
+config/            YAML configuration (settings and sources)
+docs/              Methodology, document model, events, and diagrams
+experiments/       Source discovery and Media Cloud exploration (non-production)
+news_client/       Ad hoc GDELT queries in BigQuery
+queries/gdelt/     Version-controlled SQL (extraction, analysis, and metadata)
+scripts/           Operational scripts
+src/
+  gdelt/           Collectors, pipelines, processing, quality, monitoring, and database
+  mediacloud/      Whitelist loader, keyword maps, query_mongo.py
+  bluesky/         Client, document conversion, and pipeline
+  threads/         Client, document conversion, and pipeline
+  social_keywords.py   Country-specific social media queries based on keyword maps
+tests/             Unit tests (pytest, mongomock)
 ```
 
----
+## Tests
 
-## Core Technologies
-
-* **Programming language:** Python
-* **Database:** MongoDB
-* **Integration:** REST APIs, RSS feeds, and external data services
-* **Containers:** Docker
-* **Version control:** Git / GitHub
-
----
-
-## Project Structure
-
-The current repository structure is organised as follows:
-
-```text
-dragons_data_etl/
-│
-├── config/                       # General project and source configuration
-│
-├── docs/                         # Technical and data model documentation
-│
-├── experiments/
-│   └── source_discovery/         # Exploratory source assessment and discovery artifacts
-│
-├── gdelt/                        # GDELT-specific implementation and supporting resources
-│
-├── logs/                         # Execution and processing logs
-│
-├── queries/
-│   └── gdelt/                    # Versioned queries used for GDELT acquisition
-│
-├── scripts/                      # Operational and execution scripts
-│
-├── src/                          # Core ETL implementation
-│
-├── tests/                        # Unit and integration tests
-│
-├── LICENSE
-└── README.md
-```
-### `config/`
-
-Contains general configuration required by the ETL processes, including source-specific settings and execution parameters.
-
-### `docs/`
-
-Contains technical documentation related to the architecture, MongoDB document model, data structures, and processing decisions.
-
-### `experiments/source_discovery/`
-
-Contains exploratory and experimental artifacts used during the identification, assessment, and comparison of potential data sources.
-
-Content stored in this directory is not considered production configuration and should not be consumed directly by the operational ETL pipeline until the corresponding source has been reviewed and approved.
-
-### `gdelt/`
-
-Contains implementation components and supporting resources specifically related to data acquisition through GDELT.
-
-### `logs/`
-
-Stores execution logs generated during acquisition, transformation, validation, and testing processes.
-
-### `queries/gdelt/`
-
-Contains the versioned search queries used for GDELT data acquisition, enabling traceability and reproducibility of the retrieved datasets.
-
-### `scripts/`
-
-Contains executable scripts used to run acquisition, processing, validation, maintenance, or other operational workflows.
-
-### `src/`
-
-Contains the main application code for the ETL component, including source collectors, processing logic, validation, persistence, and reusable services.
-
-### `tests/`
-
-Contains unit and integration tests used to validate source connectors, processing logic, persistence, and other ETL components.
-
----
-
-## Event pipeline (GDELT + scraper)
-
-Collections in MongoDB (`MONGODB_DATABASE`, default `dragons`):
-
-- `eventos` — seeded from [`data/events/DRAGONS_T1.csv`](data/events/DRAGONS_T1.csv) (68 events; skip the title row).
-- `queries` — one BigQuery statement per event (`id`, `id_evento`, `consulta`).
-- `whitelist` — up to **100** GKG rows per query (`id`, `hash`, `url`, full GKG payload, `id_query`, `id_scrapper`, `id_metric`).
-- `metrics` — one document per query (same counters as the previous execution metrics, plus `id` and `id_query`).
-- `scrapper` — article content from the news extractor (`id`, `hash_whitelist`, `contenido`).
-
-Configure Atlas locally in `.env` (see `.env.example`). Do not commit `.env`.
-
-```text
-python scripts/seed_events.py
-python scripts/run_gdelt.py --max-events 1 --skip-scrape
-python scripts/run_gdelt.py --event-id UK-01 --event-id CO-01 --row-limit 100
+```bash
+pytest
 ```
 
-`--max-events` / `--event-id` keep the Atlas free-tier sample small. Full 68 events × 100 rows plus HTML can exceed M0 storage.
+## Quality and Traceability
 
-The HTML extractor lives in `src/gdelt/collectors/web/news_extractor.py` (from `test/news-scraper-pipeline`).
+- Document-level validation (structure, identifier, date, source, URL, and content) and deduplication using identifiers and unique indexes.
+- Unordered inserts and idempotent upserts: a failed record does not abort the batch.
+- Cost limits (`max_bytes_billed`, with a preliminary *dry run*) and disk-space limits (`min_free_disk_bytes`).
+- Per-query metrics and run summaries (`metrics`, `pipeline_runs`).
+- Each record retains its `run_id`, origin (`source_file`, `source_row` in Media Cloud), and original text (`texto_raw`) alongside the cleaned text.
 
----
+## Responsible Use and Compliance
 
-## Shared MongoDB Flow For NLP
+- The crawler respects `robots.txt`, identifies itself using a custom `User-Agent`, limits response size to 5 MB, and waits between requests.
+- The terms of use of GDELT, Media Cloud, Bluesky, and Threads, as well as the copyright of article text, are **not** covered by the code license. Do not redistribute the textual corpus; share identifiers, URLs, and derived indicators instead.
+- Social media posts contain personal data (identifiers and usernames). Minimize or pseudonymize such data when it is not necessary, and consult the data protection officer.
 
-This ETL now writes to the MongoDB service defined in
-`C:\project\javeriana\repos\dragons_project_nlp\docker\mongo`.
+## Known Limitations
 
-For local development, start the NLP services from WSL:
+- `docker-compose.yml` and `Dockerfile` execute legacy commands (`query_mongo.py`, `loader.py`, and `news_extractor.py` in the repository root), and the `Dockerfile` installs Playwright even though it is not listed in `requirements.txt`.
+- The catalog `data/events/DRAGONS_T1.csv` (68 events) is not version-controlled; it must be copied to that path before running `seed_events.py`.
+- The process that consolidates the collections into `analytics_text_documents.parquet`, which is consumed by the analytics component, has not yet been implemented.
+- The shared queue and `ArticleCrawler` (without browser fallback) coexist with the legacy Playwright-based scraper, along with collections from the previous design.
+- `src/mediacloud/query_mongo.py` queries the `news` collection by default, which is no longer written to by this pipeline.
+- The `config/sources/newspapers.yaml` and `social_media.yaml` files are empty.
 
-```powershell
-wsl -e bash -lc "cd /mnt/c/project/javeriana/repos/dragons_project_nlp/docker/network && docker compose up -d"
-wsl -e bash -lc "cd /mnt/c/project/javeriana/repos/dragons_project_nlp/docker/mongo && docker compose up -d"
-```
+## Documentation
 
-The default local URI is:
-
-```text
-mongodb://root:dragons_dev_password@localhost:50030/?authSource=admin
-```
-
-When the ETL runs inside the shared Docker network, use the Mongo alias:
-
-```text
-mongodb://root:dragons_dev_password@dragons-mongo:27017/?authSource=admin
-```
-
-Shared collections:
-
-- `eventos`: event catalogue loaded from `data/events/DRAGONS_T1.csv`.
-- `queries`: GDELT SQL and parameters generated for each event.
-- `whitelist`: URL-level GDELT results and metadata.
-- `media_cloud_sources`: raw Media Cloud listing rows loaded from CSV/XLSX files.
-- `bluesky_posts`: public Bluesky social posts collected from `app.bsky.feed.searchPosts`.
-- `threads_posts`: public Threads posts collected from keyword search.
-- `threads_replies`: optional Threads conversation replies for posts with replies.
-- `url_queue`: common URL queue across `source=gdelt` and `source=media_cloud`.
-- `url_crawls`: HTML/text extraction attempts and metadata from the common crawler.
-- `pipeline_runs`: compact audit summaries for operational runs.
-
-Recommended 10-document local exercise:
-
-```powershell
-py -m pip install -r requirements.txt
-py scripts\load_mediacloud.py --limit 10
-py scripts\seed_sample_url_queue.py --source gdelt --strategy event_query_sample --limit 10
-py scripts\run_url_crawler.py --source media_cloud --limit 10
-py scripts\run_url_crawler.py --source gdelt --strategy event_query_sample --limit 10
-py scripts\smoke_local_mongo.py
-```
-
-Bluesky social crawling writes directly to `bluesky_posts` because the source
-already provides post text through the API. Each document keeps `source=bluesky`,
-`source_type=social_post`, `texto_raw` with the original post text, and `text`
-with the cleaned text for NLP.
-
-Configure credentials in `.env` when the public endpoint rejects unauthenticated
-search:
-
-```text
-BLUESKY_IDENTIFIER=your-handle.bsky.social
-BLUESKY_APP_PASSWORD=xxxx-xxxx-xxxx-xxxx
-```
-
-Run a 10-post proof of concept:
-
-```powershell
-py scripts\run_bluesky.py --limit 10 --countries colombia united_kingdom hungary --since 2024-01-01 --until 2026-09-11 --max-pages-per-query 1
-py scripts\export_mongo_sample.py --limit 10 --format both --output-dir data\mongo_exports\bluesky_poc_10
-```
-
-Threads social crawling writes directly to `threads_posts`; optional replies go
-to `threads_replies`. Each document keeps `source=threads`, `source_type`
-(`social_post` or `social_reply`), `texto_raw` with the original Threads text,
-and `text` with the cleaned text for NLP.
-
-Configure the Threads Graph API token in `.env`:
-
-```text
-THREADS_ACCESS_TOKEN=your-threads-access-token
-```
-
-Run a 10-post proof of concept:
-
-```powershell
-py scripts\run_threads.py --limit 10 --countries colombia united_kingdom hungary --since 2025-01-01 --until 2026-09-11 --max-pages-per-query 1
-py scripts\export_mongo_sample.py --limit 10 --format both --output-dir data\mongo_exports\threads_poc_10
-```
-
-For local validation without the external API token:
-
-```powershell
-py scripts\run_threads.py --offline-sample --limit 10 --countries colombia --download-replies --max-conversation-posts 2
-```
-
-The same proof of concept can be run as one command. It loads 10 Media Cloud
-rows, seeds 10 GDELT-like queue rows, crawls pending URLs from both sources, and
-exports 10 documents per configured MongoDB collection:
-
-```powershell
-py scripts\run_url_poc_10.py
-```
-
-To keep the HTML/text extractor running as a process, use the queue crawler in
-watch mode. It repeatedly reads `url_queue` for `pending`, `queued`, or `retry`
-URLs, writes extracted HTML/text metadata into `url_crawls`, and marks each queue
-record as `crawled` or `crawl_failed`.
-
-```powershell
-py scripts\run_url_crawler.py --watch --poll-seconds 60 --limit 10
-```
-
-For a bounded validation of the process loop:
-
-```powershell
-py scripts\run_url_crawler.py --watch --poll-seconds 5 --max-idle-cycles 3 --limit 10
-```
-
-The queue is idempotent by URL/source/strategy. Re-loading the same GDELT or
-Media Cloud URL updates `last_seen_at` / `last_seen_run_id`, but does not put an
-already crawled URL back into `pending`; only new URLs are picked up as new work.
-
-For a real GDELT run, configure `GOOGLE_APPLICATION_CREDENTIALS`, then run
-GDELT with scraping disabled so the common queue crawler owns URL extraction:
-
-```powershell
-py scripts\seed_events.py
-py scripts\run_gdelt.py --max-events 1 --row-limit 10 --skip-scrape
-py scripts\run_url_crawler.py --source gdelt --strategy event_query --limit 10
-```
-
-To inspect data across all configured MongoDB collections, including empty
-collections:
-
-```powershell
-py scripts\export_mongo_sample.py --limit 10 --format both --output-dir data\mongo_exports\poc_10
-```
-
----
-
-## Relationship with DRAGONS Data Analytics
-
-The overall architecture between both components is:
-
-```text
-Online sources
-      │
-      ▼
-dragons-data-etl
-      │
-      ▼
-    MongoDB
-      │
-      ▼
-dragons-data-analytics
-```
-
-`dragons-data-etl` is responsible for data acquisition, transformation, validation, quality control, and storage.
-
-`dragons-data-analytics` consumes the resulting data to build the analytical dataset and mining view, and to perform subsequent statistical, NLP, AI, and data-analysis processes.
-
----
+[`docs/Metodologia_task1.1.md`](https://claude.ai/chat/docs/Metodologia_task1.1.md) · [`docs/diagrama_de_documentos.md`](https://claude.ai/chat/docs/diagrama_de_documentos.md) · [`docs/eventos.md`](https://claude.ai/chat/docs/eventos.md) · [`docs/national_media_candidates.md`](https://claude.ai/chat/docs/national_media_candidates.md) · [`docs/InformeSemana4.md`](https://claude.ai/chat/docs/InformeSemana4.md) · [`news_client/README.md`](https://claude.ai/chat/news_client/README.md)
 
 ## License
 
-This project is distributed under the **Apache License 2.0**.
+This code is distributed under the **Apache License 2.0** (see [`LICENSE`](https://claude.ai/chat/LICENSE) and [`NOTICE`](https://claude.ai/chat/NOTICE)). Third-party dependencies are listed in [`THIRD_PARTY_LICENSES.md`](https://claude.ai/chat/THIRD_PARTY_LICENSES.md).
 
-The licence applies to the source code contained in this repository. Data collected from external sources remain subject to the access, licensing, and usage conditions established by each source or data provider.
+The license applies only to the code in this repository. Collected data remains subject to the access conditions, licenses, and terms of use of each source.
 
----
+## Funding
+
+This work has received funding from the European Union's Horizon Europe Research and Innovation Programme under Grant Agreement No. 101291624. The views and opinions expressed are those of the authors and do not necessarily reflect those of the European Union or the granting authority.
 
 ## Contact
 
-**Technical & Data Analytics Lead**
-
-**PhD Luis Gabriel Moreno Sandoval**
-
-Pontificia Universidad Javeriana
-
-📧 [morenoluis@javeriana.edu.co](mailto:morenoluis@javeriana.edu.co)
+**PhD Luis Gabriel Moreno Sandoval** — Pontificia Universidad Javeriana — 📧 [morenoluis@javeriana.edu.co](mailto:morenoluis@javeriana.edu.co)
